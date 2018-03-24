@@ -38,12 +38,13 @@ class DesNet(object):
         # fc: channel output 1
         # conv1 - bn - relu - conv2 - bn - relu -fc
         ####################################################
-        bn = lambda input_, name: tf.contrib.layers.batch_norm(input_, decay=0.9, updates_collections=None,
-                scale=True, is_training=is_training, scope=name)
+        bn = lambda input_: tf.contrib.layers.batch_norm(input_, decay=0.9, updates_collections=None,
+                scale=True, is_training=is_training)
         with tf.variable_scope('descriptor', reuse=reuse):
-            outputs = tf.nn.relu(bn(tf.contrib.layers.conv2d(inputs, 64, 4, stride=2), 'bn1'))
-            outputs = tf.nn.relu(bn(tf.contrib.layers.conv2d(outputs, 128, 2, stride=1), 'bn2'))
-            outputs = tf.contrib.layers.fully_connected(outputs, 1, activation_fn=None)
+            outputs = tf.nn.relu(tf.contrib.layers.conv2d(inputs, 64, 4, stride=2, activation_fn=bn))
+            outputs = tf.nn.relu(tf.contrib.layers.conv2d(outputs, 128, 2, stride=1, activation_fn=bn))
+            #outputs = bn(tf.contrib.layers.fully_connected(outputs, 1000))
+            outputs = tf.contrib.layers.fully_connected(outputs, 1, activation_fn=tf.sigmoid)
             return outputs
 
     def Langevin_sampling(self, samples, flags):
@@ -55,7 +56,7 @@ class DesNet(object):
         ####################################################
         cond = lambda i, s : tf.less(i, flags.T)
         body = lambda i, s : self._langevin(i, s, flags)
-        _, samples = tf.while_loop(cond, body, [0, samples], back_prop=False)
+        _, samples = tf.while_loop(cond, body, [0, samples])
         return samples
 
     # langevin sampling helper function
@@ -71,16 +72,16 @@ class DesNet(object):
         ####################################################
         color_channels = 3
         self.Y = tf.placeholder(shape=[None, flags.image_size, flags.image_size, color_channels], dtype=tf.float32)
-        self.mean_Y = tf.placeholder(shape=[None, flags.image_size, flags.image_size, color_channels], dtype=tf.float32)
+        self.Y_ = tf.placeholder(shape=[None, flags.image_size, flags.image_size, color_channels], dtype=tf.float32)
 
         self.descriptor(self.Y) # init
-        self.synth_Y = self.Langevin_sampling(self.mean_Y, flags)
-        self.loss = self._energy(self.Y, flags) - self._energy(self.synth_Y, flags)
+        self.synth_Y = self.Langevin_sampling(self.Y_, flags)
+        self.loss = self._energy(self.Y, flags) - self._energy(self.Y_, flags)
 
         self.global_step = tf.get_variable('global_step', (),
                 initializer=tf.zeros_initializer(), trainable=False)
         descriptor_vars = [var for var in tf.trainable_variables() if 'descriptor' in var.name]
-        self.optimizer = tf.train.AdamOptimizer(flags.learning_rate, flags.beta1).minimize(
+        self.optimizer = tf.train.GradientDescentOptimizer(flags.learning_rate).minimize(
                 self.loss, global_step=self.global_step, var_list=descriptor_vars)
     
     # energy helper function
@@ -117,12 +118,12 @@ class DesNet(object):
         mean_data = np.repeat(train_data.mean(1).mean(1), 64*64, axis=0).reshape(train_data.shape)
         save_images(train_data, "%s/original.png" % self.sample_dir)
         for epoch in range(flags.epoch):
-            feed_dict = {self.Y : train_data, self.mean_Y : mean_data}
-            step, loss, synth_images, _ = self.sess.run([self.global_step, self.loss,
-                    self.synth_Y, self.optimizer], feed_dict=feed_dict)
+            synth_images = self.sess.run(self.synth_Y, feed_dict={self.Y_ : mean_data})
+            feed_dict = {self.Y : train_data, self.Y_ : synth_images}
+            step, loss, _ = self.sess.run([self.global_step, self.loss, self.optimizer], feed_dict=feed_dict)
 
+            f.write("%f\n" % loss)
             if step % 10 == 0 or step == 1:
                 print("Step %d: %f" % (step, loss))
                 saver.save(self.sess, "%s/model_%d.ckpt" % (self.model_dir, step))
                 save_images(synth_images, "%s/synth_%d.png" % (self.sample_dir, step), 1)
-                f.write("%f\n" % loss)

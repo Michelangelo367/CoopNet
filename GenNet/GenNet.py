@@ -60,8 +60,8 @@ class GenNet(object):
             outputs = tf.reshape(outputs, (n, 8, 8, 16))
             outputs = batch_norm(deconv(outputs, 64, 2, stride=2, activation_fn=leaky_relu), 'bn2')
             outputs = batch_norm(deconv(outputs, 128, 2, stride=2, activation_fn=leaky_relu), 'bn3')
-            outputs = batch_norm(deconv(outputs, 256, 2, stride=2, activation_fn=leaky_relu), 'bn4')
-            outputs = deconv(outputs, 3, 5, stride=1, activation_fn=tf.tanh)
+            #outputs = batch_norm(deconv(outputs, 256, 2, stride=2, activation_fn=leaky_relu), 'bn4')
+            outputs = deconv(outputs, 3, 2, stride=2, activation_fn=tf.tanh)
             return outputs
 
 
@@ -72,7 +72,7 @@ class GenNet(object):
         # tf.while_loop to define a loop on computation graph.
         # The return should be the updated z.
         ####################################################
-        _, z = tf.while_loop(lambda i, z: tf.less(i, self.sample_steps), self._langevin, [0, z], back_prop=False)
+        _, z = tf.while_loop(lambda i, z: tf.less(i, self.sample_steps), self._langevin, [0, z])
         return z
 
     # helper function for langevin_dynamics
@@ -90,22 +90,13 @@ class GenNet(object):
         ####################################################
         self.synth_images = self.generator(self.z) # initialize model
         self.sample_z = self.langevin_dynamics(self.z)
-        self.recon_images = self.generator(self.sample_z, reuse=True)
-        self.loss = tf.reduce_sum(tf.square(self.obs - self.recon_images)) / (2 * self.sigma**2)
+        self.loss = tf.reduce_sum(tf.square(self.obs - self.synth_images)) / (2 * self.sigma**2)
 
         self.global_step = tf.get_variable('global_step', (),
                 initializer=tf.zeros_initializer(), trainable=False)
         generator_vars = [var for var in tf.trainable_variables() if 'generator' in var.name]
-        self.optimizer = tf.train.AdamOptimizer(self.g_lr, self.beta1).minimize(
+        self.optimizer = tf.train.AdamOptimizer(self.g_lr, beta1=self.beta1).minimize(
                 self.loss, global_step=self.global_step, var_list=generator_vars)
-        
-        # calculate gradients, store in update dict
-        #self.update_grads = list()
-        #for var in tf.trainable_variables():
-        #    if 'generator' in var.name:
-        #        generator_grad = tf.gradients(generator_vals, var)
-        #        update_grad = tf.reduce_sum(tf.matmul(self.obs - generator_vals, generator_grad) / self.sigma**2, 0)
-        #        self.update_grads.append((update_grad, var))
 
 
     def train(self):
@@ -133,25 +124,26 @@ class GenNet(object):
         # reconstructed images and synthesized images in
         # self.sample_dir, loss in self.log_dir (using writer).
         ####################################################
-        save_images(train_data, "%s/original.png" % self.sample_dir)
         f = open('%s/cat.log' % self.log_dir, 'w+')
         inter_z = np.mgrid[-2:2.1:0.5, -2:2.1:0.5].reshape(2, -1).T
         synth_z = np.random.normal(size=(9**2, self.z_dim))
         init_z = np.random.normal(size=(self.batch_size, self.z_dim))
-        for epoch in range(start, self.num_epochs):
-            # create batches
-            for idx in range(num_batches):
-                batch = train_data[idx * self.batch_size:(idx + 1) * self.batch_size]
-                feed_dict = {self.obs : batch, self.z : init_z}
-                step, loss, recon_images, init_z, _ = self.sess.run([self.global_step, self.loss,
-                        self.recon_images, self.sample_z, self.optimizer], feed_dict=feed_dict)
+        save_images(train_data, "%s/original.png" % self.sample_dir)
+        step = 0
+        while step < self.num_epochs:
+            # no actual batches
+            init_z = self.sess.run(self.sample_z, feed_dict={self.obs: train_data, self.z: init_z})
+            feed_dict = {self.obs : train_data, self.z : init_z}
+            step, loss, recon_images, _ = self.sess.run([self.global_step, self.loss,
+                    self.synth_images, self.optimizer], feed_dict=feed_dict)
 
-                if step % self.log_step == 0 or step == 1:
-                    print("Step %d: %2.6f" % (step, loss))
-                    saver.save(self.sess, "%s/model_%d.ckpt" % (self.model_dir, step))
-                    synth_images = self.sess.run(self.synth_images, feed_dict={self.z : synth_z})
-                    inter_images = self.sess.run(self.synth_images, feed_dict={self.z : inter_z})
-                    save_images(recon_images, "%s/reconstructed_%d.png" % (self.sample_dir, step), 1)
-                    save_images(synth_images, "%s/synthetic_%d.png" % (self.sample_dir, step), 1)
-                    save_images(inter_images, "%s/interpolated_%d.png" % (self.sample_dir, step), 1)
-                    f.write("%f\n" % loss)
+
+            f.write("%f\n" % loss)
+            if step % self.log_step == 0 or step == 1:
+                print("Step %d: %2.6f" % (step, loss))
+                saver.save(self.sess, "%s/model_%d.ckpt" % (self.model_dir, step))
+                synth_images = self.sess.run(self.synth_images, feed_dict={self.z : synth_z})
+                inter_images = self.sess.run(self.synth_images, feed_dict={self.z : inter_z})
+                save_images(recon_images, "%s/reconstructed_%d.png" % (self.sample_dir, step), 1)
+                save_images(synth_images, "%s/synthetic_%d.png" % (self.sample_dir, step), 1)
+                save_images(inter_images, "%s/interpolated_%d.png" % (self.sample_dir, step), 1)
