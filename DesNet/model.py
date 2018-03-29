@@ -74,7 +74,7 @@ class DesNet(object):
         self.Y = tf.placeholder(shape=[None, flags.image_size, flags.image_size, color_channels], dtype=tf.float32)
         self.Y_ = tf.placeholder(shape=[None, flags.image_size, flags.image_size, color_channels], dtype=tf.float32)
 
-        self.descriptor(self.Y) # init
+        self.z = self.descriptor(self.Y) # init
         self.synth_Y = self.Langevin_sampling(self.Y_, flags)
         self.loss = self._energy(self.Y, flags) - self._energy(self.Y_, flags)
 
